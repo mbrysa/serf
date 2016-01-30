@@ -34,12 +34,13 @@ const (
 // ShutdownCh. If two messages are sent on the ShutdownCh it will forcibly
 // exit.
 type Command struct {
-	Ui            cli.Ui
-	ShutdownCh    <-chan struct{}
-	args          []string
-	scriptHandler *ScriptEventHandler
-	logFilter     *logutils.LevelFilter
-	logger        *log.Logger
+	Ui              cli.Ui
+	ShutdownCh      <-chan struct{}
+	args            []string
+	scriptHandler   *ScriptEventHandler
+	tchannelHandler *TChannelEventHandler
+	logFilter       *logutils.LevelFilter
+	logger          *log.Logger
 }
 
 // readConfig is responsible for setup of our configuration using
@@ -372,6 +373,11 @@ func (c *Command) startAgent(config *Config, agent *Agent,
 		Logger:   log.New(logOutput, "", log.LstdFlags),
 	}
 	agent.RegisterEventHandler(c.scriptHandler)
+
+	c.tchannelHandler = &TChannelEventHandler{
+		SelfFunc: func() serf.Member { return agent.Serf().LocalMember() },
+	}
+	agent.RegisterEventHandler(c.tchannelHandler)
 
 	// Start the agent after the handler is registered
 	if err := agent.Start(); err != nil {

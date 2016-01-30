@@ -3,15 +3,86 @@ package agent
 import (
 	"fmt"
 	"github.com/hashicorp/serf/serf"
+	"github.com/uber/tchannel-go"
+	"github.com/uber/tchannel-go/json"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // EventHandler is a handler that does things when events happen.
 type EventHandler interface {
 	HandleEvent(serf.Event)
+}
+
+type RpMembers struct {
+	Members []string `json:"members"`
+}
+
+type TChannelEventHandler struct {
+	SelfFunc func() serf.Member
+}
+
+func rpHostPort(tags map[string]string) string {
+	var rpport string
+	var rphost string
+	for name, val := range tags {
+		switch name {
+		case "rphost":
+			rphost = val
+		case "rpport":
+			rpport = val
+		}
+	}
+	if rpport == "" || rphost == "" {
+		return "fail"
+	} else {
+		return rphost + ":" + rpport
+	}
+}
+
+func sendEventToTChannel(me serf.MemberEvent, self serf.Member) {
+	var name string
+	switch me.Type {
+	case serf.EventMemberJoin:
+		name = "add"
+	case serf.EventMemberLeave:
+		name = "remove"
+	case serf.EventMemberFailed:
+		name = "remove"
+	default:
+		return
+	}
+	ctx, cancel := json.NewContext(time.Second * 10)
+	defer cancel()
+
+	client, err := tchannel.NewChannel("serf", nil)
+	if err != nil {
+		fmt.Errorf("Couldn't create new client channel.")
+	}
+
+	peer := client.Peers().Add(rpHostPort(self.Tags))
+
+	members := new(RpMembers)
+	for _, member := range me.Members {
+		members.Members = append(members.Members, rpHostPort(member.Tags))
+	}
+
+	if err := json.CallPeer(ctx, peer, "ringpop", "/hashring/"+name, &members, nil); err != nil {
+		fmt.Errorf("json.Call failed.")
+	}
+}
+
+func (h *TChannelEventHandler) HandleEvent(event serf.Event) {
+	switch e := event.(type) {
+	case serf.MemberEvent:
+		self := h.SelfFunc()
+		sendEventToTChannel(e, self)
+	default:
+		fmt.Errorf("Unknown event type: %s", event.EventType().String())
+	}
 }
 
 // ScriptEventHandler invokes scripts for the events that it receives.
